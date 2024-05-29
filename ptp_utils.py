@@ -58,7 +58,7 @@ def view_images(images, num_rows=1, offset_ratio=0.02,image_name=None):
                 i * num_cols + j]
 
     pil_img = Image.fromarray(image_)
-    display(pil_img)
+    #display(pil_img)
     if image_name!=None:
         pil_img.save(f"{image_name}.jpg")
 

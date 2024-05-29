@@ -9,7 +9,7 @@ from typing import Optional, Union, Tuple, List, Dict
 
 import ptp_utils
 import seq_aligner
-from diffusers import StableDiffusionPipeline
+from diffusers import StableDiffusionPipeline, UNet2DConditionModel
 
 
 class LocalBlend:
@@ -312,67 +312,31 @@ if __name__ == '__main__':
     parser.add_argument('--model_path', type=str,
                         default='/home/turing/cfs_cz/finn/codes/diffusers'
                                 '/examples/text_to_image/experiments/full_training/'
-                                'jidu-data-II-15-v06/bs_12_lr_1e5_2gpu_50_epoch')
+                                'jidu-data-II-15-v01/bs_12_lr_1e5_2gpu_50_epoch')
+    parser.add_argument("--unet_path", type=str, default='/home/turing/cfs_cz/finn/codes/diffusers'
+                                                         '/examples/text_to_image/experiments/full_training/'
+                                                         'jidu-data-II-15-v06/bs_12_lr_1e5_2gpu_200_epoch/checkpoint-18000/unet')
     parser.add_argument('--save_dir', type=str,
-                        default='/home/turing/cfs_cz/finn/codes/prompt-to-prompt/visualization/jidu-data-II-sensor-v01/bs_12_lr_1e5_2gpu_50_epoch')
+                        default='/home/turing/cfs_cz/finn/codes/prompt-to-prompt/visualization/jidu-data-II-sensor-v06/bs_12_lr_1e5_2gpu_200_epoch')
     parser.add_argument('--prompts', nargs='+', type=str, default='prompts for inference')
     parser.add_argument('--img_name', nargs='+', type=str, default='image name for generation')
-    parser.add_argument("--method", type=str, default="replace", choices=["replace", "refine", "reweight"])
     args = parser.parse_args()
-
+    os.makedirs(args.save_dir, exist_ok=True)
     device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
-    ldm_stable = StableDiffusionPipeline.from_pretrained(args.model_path,
+    unet = UNet2DConditionModel.from_pretrained(args.unet_path,use_safetensors=True)
+
+    ldm_stable = StableDiffusionPipeline.from_pretrained(args.model_path, unet=unet,
                                                          use_safetensors=True).to('cuda:0')
     tokenizer = ldm_stable.tokenizer
     g_cpu = torch.Generator().manual_seed(42)
 
     args.prompts = [
-        ["A photo depicting a street scene at daytime, with a car driving down a road",
-         "A photo depicting a street scene at night, with a car driving down a road"],
-        ["A photo depicting a city street at daytime, with a wide, empty road",
-         "A photo depicting a city street at night, with a wide, empty road"],
-        ["A city street at daytime, with many cars and people walking, surrounded by tall buildings.",
-         "A city street at night, with many cars and people walking, surrounded by tall buildings"],
-        ["A photo depicting a street scene on a sunny day, with a car driving down a road",
-         "A photo depicting a street scene on a rainy day, with a car driving down a road"],
-        ["A photo depicting a city street on a sunny day, with a wide, empty road",
-         "A photo depicting a city street on a rainy day, with a wide, empty road"],
-        ["A city street on a sunny day, with many cars and people walking, surrounded by tall buildings.",
-         "A city street on a rainy day, with many cars and people walking, surrounded by tall buildings"],
-        ["A photo depicting a street scene on a sunny day, with a car driving down a road",
-         "A photo depicting a street scene on a snowy day, with a car driving down a road"],
-        ["A photo depicting a city street on a sunny day, with a wide, empty road",
-         "A photo depicting a city street on a snowy day, with a wide, empty road"],
-        ["A city street on a sunny day, with many cars and people walking, surrounded by tall buildings.",
-         "A city street on a snowy day, with many cars and people walking, surrounded by tall buildings"],
-    ]
-    args.prompts += [
-        ["A photo depicting a long, empty highway road at daytime, with a bridge in the background",
-         "A photo depicting a long, empty highway road at night, with a bridge in the background"],
-        ["A photo depicting a highway at daytime, with a car driving down the road",
-         "A photo depicting a highway at night, with a car driving down the road"],
-        ["A busy highway at daytime, with a steady stream of cars speeding along, stretching into the distance",
-         "A busy highway at night, with a steady stream of cars speeding along, stretching into the distance"],
-        ["A photo depicting a long, empty highway road on a sunny day, with a bridge in the background",
-         "A photo depicting a long, empty highway road on a rainy day, with a bridge in the background"],
-        ["A photo depicting a highway on a sunny day, with a car driving down the road",
-         "A photo depicting a highway on a rainy day, with a car driving down the road"],
-        ["A busy highway on a sunny day, with a steady stream of cars speeding along, stretching into the distance",
-         "A busy highway on a rainy day, with a steady stream of cars speeding along, stretching into the distance"],
-        ["A photo depicting a long, empty highway road on a sunny day, with a bridge in the background",
-         "A photo depicting a long, empty highway road on a snowy day, with a bridge in the background"],
-        ["A photo depicting a highway on a sunny day, with a car driving down the road",
-         "A photo depicting a highway on a snowy day, with a car driving down the road"],
-        ["A busy highway on a sunny day, with a steady stream of cars speeding along, stretching into the distance",
-         "A busy highway on a snowy day, with a steady stream of cars speeding along, stretching into the distance"],
+        [
+            "A photo depicting a busy city street on a sunny day",
+            "A photo depicting a busy city street on a snowy day"],
     ]
     args.img_name = []
-    args.img_name += [f"sunny_night_urban_{i}" for i in range(3)]
-    args.img_name += [f"sunny_rain_urban_{i}" for i in range(3)]
-    args.img_name += [f"sunny_snow_urban_{i}" for i in range(3)]
-    args.img_name += [f"sunny_night_highway_{i}" for i in range(3)]
-    args.img_name += [f"sunny_rain_highway_{i}" for i in range(3)]
-    args.img_name += [f"sunny_snow_highway_{i}" for i in range(3)]
+    args.img_name += [f"test_{i}" for i in range(len(args.prompts))]
     cross_replace_steps_list = [0.1 * i for i in range(2, 10, 2)]
     self_replace_steps_list = [0.1 * i for i in range(2, 10, 2)]
     for img_name, prompts in zip(args.img_name, args.prompts):
@@ -380,18 +344,8 @@ if __name__ == '__main__':
         controller = AttentionStore()
         image, x_t = run_and_display(prompts_original, controller, latent=None, run_baseline=False, generator=g_cpu,
                                      image_name=None)
-        # show_cross_attention(controller, res=16, from_where=["up", "down"],
-        # image_name=os.path.join(args.save_dir, f"{img_name}_cross"))
-        # show_self_attention_comp(controller, res=16, from_where=["up", "down"],
-        # image_name=os.path.join(args.save_dir, f"{img_name}_self"))
         # don't use LocalBlend unless the difference lays in some specific objects
-        if args.method == "replace":
-            controller = AttentionReplace(prompts, NUM_DIFFUSION_STEPS, cross_replace_steps=.8, self_replace_steps=0.4)
-            _ = run_and_display(prompts, controller, latent=x_t, run_baseline=True,
-                                image_name=os.path.join(args.save_dir, f"{img_name}_replace_p2p"))
-        elif args.method == "refine":
-            controller = AttentionRefine(prompts, NUM_DIFFUSION_STEPS, cross_replace_steps=.8, self_replace_steps=0.4)
-            _ = run_and_display(prompts, controller, latent=x_t, run_baseline=True,
-                                image_name=os.path.join(args.save_dir, f"{img_name}_refine_p2p"))
-        else:
-            raise NotImplementedError
+        controller = AttentionReplace(prompts, NUM_DIFFUSION_STEPS, cross_replace_steps=.8, self_replace_steps=0.4)
+        # controller = AttentionRefine(prompts, NUM_DIFFUSION_STEPS, cross_replace_steps=.8, self_replace_steps=0.4)
+        _ = run_and_display(prompts, controller, latent=x_t, run_baseline=True,
+                            image_name=os.path.join(args.save_dir, f"{img_name}_snow_p2p"))

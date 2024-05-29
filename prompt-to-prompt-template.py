@@ -2,14 +2,25 @@ import abc
 import argparse
 import numpy as np
 import os
+import random
 import torch
 import torch.nn.functional as nnf
 from PIL import Image
+from tqdm import tqdm
 from typing import Optional, Union, Tuple, List, Dict
 
 import ptp_utils
 import seq_aligner
-from diffusers import StableDiffusionPipeline
+from diffusers import StableDiffusionPipeline, UNet2DConditionModel
+from sentence_template import SENTENCE_TEMPLATE
+
+SCENE_TYPE = ["urban mainroad"]
+OBJECTS = ['car',
+           'van',
+           'truck',
+           'buses', ]
+LIGHTING_CONDITION = ["bright", "dim"]
+TIME_AND_WEATHER_CONDITIONS = ["sunny day", "clear night", "cloudy day", "rainy night"]
 
 
 class LocalBlend:
@@ -303,95 +314,95 @@ def run(prompts, controller, latent=None, run_baseline=False, generator=None):
     return images, x_t
 
 
+def sentence_generation(label_dict):
+    # randomly select one element from the sentence template
+    sentence_template = SENTENCE_TEMPLATE[torch.randint(0, len(SENTENCE_TEMPLATE), (1,)).item()]
+    for key in label_dict:
+        assert key in sentence_template, f"{key} not in {sentence_template}"
+        sentence_template = sentence_template.replace(key, label_dict[key])
+    return sentence_template
+
+
 if __name__ == '__main__':
     LOW_RESOURCE = False
-    NUM_DIFFUSION_STEPS = 100
+    NUM_DIFFUSION_STEPS = 50
     GUIDANCE_SCALE = 7.5
     MAX_NUM_WORDS = 77
+    CHECKPOINT = 2000, 4000, 6000, 8000, 10000, 12000, 14000, 16000, 18000, 20000
+    CHECKPOINT = [f"checkpoint-{checkpoint}" for checkpoint in CHECKPOINT]
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_path', type=str,
                         default='/home/turing/cfs_cz/finn/codes/diffusers'
                                 '/examples/text_to_image/experiments/full_training/'
-                                'jidu-data-II-15-v06/bs_12_lr_1e5_2gpu_50_epoch')
+                                'jidu-data-II-15-v06/bs_12_lr_1e5_2gpu_200_epoch')
     parser.add_argument('--save_dir', type=str,
-                        default='/home/turing/cfs_cz/finn/codes/prompt-to-prompt/visualization/jidu-data-II-sensor-v01/bs_12_lr_1e5_2gpu_50_epoch')
-    parser.add_argument('--prompts', nargs='+', type=str, default='prompts for inference')
-    parser.add_argument('--img_name', nargs='+', type=str, default='image name for generation')
+                        default='/home/turing/cfs_cz/finn/codes/prompt-to-prompt/visualization/jidu-data-II-sensor-v06/bs_12_lr_1e5_2gpu_200_epoch')
+    parser.add_argument('--img_name', nargs='+', default="cross_self_exp", type=str, help='image name for generation')
     parser.add_argument("--method", type=str, default="replace", choices=["replace", "refine", "reweight"])
+    parser.add_argument("--num_images", type=int, default=5, help="number of images to generate")
     args = parser.parse_args()
 
     device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
-    ldm_stable = StableDiffusionPipeline.from_pretrained(args.model_path,
-                                                         use_safetensors=True).to('cuda:0')
-    tokenizer = ldm_stable.tokenizer
-    g_cpu = torch.Generator().manual_seed(42)
-
-    args.prompts = [
-        ["A photo depicting a street scene at daytime, with a car driving down a road",
-         "A photo depicting a street scene at night, with a car driving down a road"],
-        ["A photo depicting a city street at daytime, with a wide, empty road",
-         "A photo depicting a city street at night, with a wide, empty road"],
-        ["A city street at daytime, with many cars and people walking, surrounded by tall buildings.",
-         "A city street at night, with many cars and people walking, surrounded by tall buildings"],
-        ["A photo depicting a street scene on a sunny day, with a car driving down a road",
-         "A photo depicting a street scene on a rainy day, with a car driving down a road"],
-        ["A photo depicting a city street on a sunny day, with a wide, empty road",
-         "A photo depicting a city street on a rainy day, with a wide, empty road"],
-        ["A city street on a sunny day, with many cars and people walking, surrounded by tall buildings.",
-         "A city street on a rainy day, with many cars and people walking, surrounded by tall buildings"],
-        ["A photo depicting a street scene on a sunny day, with a car driving down a road",
-         "A photo depicting a street scene on a snowy day, with a car driving down a road"],
-        ["A photo depicting a city street on a sunny day, with a wide, empty road",
-         "A photo depicting a city street on a snowy day, with a wide, empty road"],
-        ["A city street on a sunny day, with many cars and people walking, surrounded by tall buildings.",
-         "A city street on a snowy day, with many cars and people walking, surrounded by tall buildings"],
-    ]
-    args.prompts += [
-        ["A photo depicting a long, empty highway road at daytime, with a bridge in the background",
-         "A photo depicting a long, empty highway road at night, with a bridge in the background"],
-        ["A photo depicting a highway at daytime, with a car driving down the road",
-         "A photo depicting a highway at night, with a car driving down the road"],
-        ["A busy highway at daytime, with a steady stream of cars speeding along, stretching into the distance",
-         "A busy highway at night, with a steady stream of cars speeding along, stretching into the distance"],
-        ["A photo depicting a long, empty highway road on a sunny day, with a bridge in the background",
-         "A photo depicting a long, empty highway road on a rainy day, with a bridge in the background"],
-        ["A photo depicting a highway on a sunny day, with a car driving down the road",
-         "A photo depicting a highway on a rainy day, with a car driving down the road"],
-        ["A busy highway on a sunny day, with a steady stream of cars speeding along, stretching into the distance",
-         "A busy highway on a rainy day, with a steady stream of cars speeding along, stretching into the distance"],
-        ["A photo depicting a long, empty highway road on a sunny day, with a bridge in the background",
-         "A photo depicting a long, empty highway road on a snowy day, with a bridge in the background"],
-        ["A photo depicting a highway on a sunny day, with a car driving down the road",
-         "A photo depicting a highway on a snowy day, with a car driving down the road"],
-        ["A busy highway on a sunny day, with a steady stream of cars speeding along, stretching into the distance",
-         "A busy highway on a snowy day, with a steady stream of cars speeding along, stretching into the distance"],
-    ]
-    args.img_name = []
-    args.img_name += [f"sunny_night_urban_{i}" for i in range(3)]
-    args.img_name += [f"sunny_rain_urban_{i}" for i in range(3)]
-    args.img_name += [f"sunny_snow_urban_{i}" for i in range(3)]
-    args.img_name += [f"sunny_night_highway_{i}" for i in range(3)]
-    args.img_name += [f"sunny_rain_highway_{i}" for i in range(3)]
-    args.img_name += [f"sunny_snow_highway_{i}" for i in range(3)]
-    cross_replace_steps_list = [0.1 * i for i in range(2, 10, 2)]
-    self_replace_steps_list = [0.1 * i for i in range(2, 10, 2)]
-    for img_name, prompts in zip(args.img_name, args.prompts):
-        prompts_original = [prompts[0]]
-        controller = AttentionStore()
-        image, x_t = run_and_display(prompts_original, controller, latent=None, run_baseline=False, generator=g_cpu,
-                                     image_name=None)
-        # show_cross_attention(controller, res=16, from_where=["up", "down"],
-        # image_name=os.path.join(args.save_dir, f"{img_name}_cross"))
-        # show_self_attention_comp(controller, res=16, from_where=["up", "down"],
-        # image_name=os.path.join(args.save_dir, f"{img_name}_self"))
-        # don't use LocalBlend unless the difference lays in some specific objects
-        if args.method == "replace":
-            controller = AttentionReplace(prompts, NUM_DIFFUSION_STEPS, cross_replace_steps=.8, self_replace_steps=0.4)
-            _ = run_and_display(prompts, controller, latent=x_t, run_baseline=True,
-                                image_name=os.path.join(args.save_dir, f"{img_name}_replace_p2p"))
-        elif args.method == "refine":
-            controller = AttentionRefine(prompts, NUM_DIFFUSION_STEPS, cross_replace_steps=.8, self_replace_steps=0.4)
-            _ = run_and_display(prompts, controller, latent=x_t, run_baseline=True,
-                                image_name=os.path.join(args.save_dir, f"{img_name}_refine_p2p"))
+    for checkpoint in CHECKPOINT:
+        if checkpoint != None:
+            unet = UNet2DConditionModel.from_pretrained(os.path.join(args.model_path, checkpoint, "unet"),
+                                                        use_safetensors=True)
+            ldm_stable = StableDiffusionPipeline.from_pretrained(args.model_path, unet=unet, use_safetensors=True).to(
+                device)
+            save_dir = os.path.join(args.save_dir, checkpoint)
+            os.makedirs(save_dir, exist_ok=True)
         else:
-            raise NotImplementedError
+            ldm_stable = StableDiffusionPipeline.from_pretrained(args.model_path, use_safetensors=True).to(device)
+        tokenizer = ldm_stable.tokenizer
+        cross_replace_steps_list = [0.2, 0.4, 0.6, 0.8, 0.9]
+        self_replace_steps_list = [0.2, 0.4, 0.6, 0.8, 0.9]
+        cross_replace_steps_list = [0.8]
+        self_replace_steps_list = [0.4]
+        # self_replace_steps_list = [0.5 for i in range(4)]
+        # cross_replace_steps_list = [0.5 for i in range(4)]
+        random.seed(42)
+        if len(args.img_name) == 1:
+            args.img_name = args.img_name[0]
+        g_cpu = torch.Generator()
+        for i in tqdm(range(args.num_images)):
+            sentence_dict = {}
+            sentence_dict["[scene type]"] = SCENE_TYPE[0]
+            sentence_dict["[time and weather conditions]"] = TIME_AND_WEATHER_CONDITIONS[0]
+            sentence_dict["[lighting condition]"] = LIGHTING_CONDITION[0]
+
+            sentence_dict[
+                "[objects in the image and their quantity]"] = (f"{random.randint(1, 5)} car,"
+                                                                f"{random.randint(1, 5)} van,")
+            # sentence_dict[
+            #     "[objects in the image and their quantity]"] = "several cars"
+            for exp in ['caption', 'template']:
+                if exp == "caption":
+                    prompts_original = (f"{SCENE_TYPE[0]},{TIME_AND_WEATHER_CONDITIONS[0]},"
+                                        f"{random.randint(1, 5)} car,"
+                                        f"{random.randint(1, 5)} van,"
+                                        f"{LIGHTING_CONDITION[0]}")
+                else:
+                    prompts_original = sentence_generation(sentence_dict)
+
+                # prompts_original = "The urban mainroad is a medley of 5 cars,1 van, under bright during a sunny day."
+                prompts_edited = prompts_original.replace("sunny day", "clear night")
+                prompts = [prompts_original, prompts_edited]
+                print(f"prompts: {prompts}")
+                controller = AttentionStore()
+                image, x_t = run_and_display([prompts_original], controller, latent=None, run_baseline=False,
+                                             generator=g_cpu,
+                                             image_name=None)
+                for cross_replace_step, self_replace_step in zip(cross_replace_steps_list, self_replace_steps_list):
+                    if args.method == "replace":
+                        controller = AttentionReplace(prompts, NUM_DIFFUSION_STEPS, cross_replace_steps=cross_replace_step,
+                                                      self_replace_steps=self_replace_step)
+                        _ = run_and_display(prompts, controller, latent=x_t, run_baseline=False,
+                                            image_name=os.path.join(save_dir,
+                                                                    f"{exp}_{i}_replace_cross_{cross_replace_step}_self_{self_replace_step}_p2p"))
+                    elif args.method == "refine":
+                        controller = AttentionRefine(prompts, NUM_DIFFUSION_STEPS, cross_replace_steps=.8,
+                                                     self_replace_steps=0.8)
+                        _ = run_and_display(prompts, controller, latent=x_t, run_baseline=False,
+                                            image_name=os.path.join(save_dir, f"{args.img_name}_refine_p2p"))
+                    else:
+                        raise NotImplementedError
